@@ -430,12 +430,12 @@ describe("config and provider", () => {
     expect(cfg.provider.doubao.models["doubao-auto"]).toBeDefined()
   })
 
-  test("both modes are listed, and only one reasons", async () => {
+  test("the model list is a hook, so it can follow the client", async () => {
     const h = await hooks()
-    const m = h.provider.models
-    expect(Object.keys(m)).toEqual(["doubao-auto", "doubao-2.1-lite", "doubao-2.1-pro", "doubao-2.1-pro-deep"])
-    expect(m["doubao-auto"].reasoning).toBe(false)
-    expect(m["doubao-2.1-pro-deep"].reasoning).toBe(true)
+    // It used to be the static MODELS object. It is a hook now because the
+    // list follows the client's own menu; the table itself is covered by
+    // client-models.test.mjs without touching a running app.
+    expect(typeof h.provider.models).toBe("function")
   })
 
   test("the concurrency the host queues by is declared", async () => {

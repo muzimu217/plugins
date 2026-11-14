@@ -23,11 +23,15 @@ import { spawn, execSync } from "node:child_process"
 import { readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
+import { binaryPath, userDataDir, launchArgs, isClientRunning, supportsAutoInstall, installHint, IS_WIN } from "./platform.mjs"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const DEFAULT_PORT = Number(process.env.DOUBAO_CDP_PORT ?? 9333)
-const DEFAULT_BINARY = "/Applications/Doubao.app/Contents/MacOS/Doubao"
-const DEFAULT_UDD = `${homedir()}/Library/Application Support/Doubao`
+// Resolved per platform (lib/platform.mjs): an .app bundle's inner binary on
+// macOS, %LOCALAPPDATA%\Doubao\...\Doubao.exe on Windows. Read lazily so a
+// test can run on any machine without a client.
+const DEFAULT_BINARY = () => binaryPath()
+const DEFAULT_UDD = () => userDataDir()
 const DEFAULT_ACTIVITY = "https://www.doubao.com/pc/agent-explore"
 
 // ---------------------------------------------------------------------------
@@ -177,12 +181,7 @@ export async function listTargets(port) {
 }
 
 export function isDoubaoRunning() {
-  try {
-    const out = execSync("pgrep -f 'Doubao.app/Contents/MacOS/Doubao'", { stdio: ["ignore", "pipe", "ignore"] })
-    return out.toString().trim().length > 0
-  } catch {
-    return false
-  }
+  return isClientRunning()
 }
 
 // Only used when the caller opts in; the plugin never calls this so unit
@@ -190,9 +189,11 @@ export function isDoubaoRunning() {
 // (e.g. the daily automation) can reuse the same flags. With `detached:true`
 // the spawned client outlives the spawning process (used by the ensure-doubao
 // helper, which exits after confirming the port is up).
-export async function launchClient({ binary = DEFAULT_BINARY, udd = DEFAULT_UDD, port = DEFAULT_PORT, timeoutMs = 45000, detached = false } = {}) {
-  const args = [binary, `--remote-debugging-port=${port}`, `--user-data-dir=${udd}`,
-    "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-proxy-server"]
+export async function launchClient({ binary, udd, port = DEFAULT_PORT, timeoutMs = 45000, detached = false } = {}) {
+  const exe = binary || DEFAULT_BINARY()
+  const dir = udd || DEFAULT_UDD()
+  if (!exe) return { ok: false, error: "找不到豆包客户端可执行文件（未安装？）" }
+  const args = [exe, ...launchArgs({ port, udd: dir || undefined })]
   let child
   try {
     child = spawn(args[0], args.slice(1), { stdio: "ignore", detached })
@@ -224,11 +225,12 @@ export async function launchClient({ binary = DEFAULT_BINARY, udd = DEFAULT_UDD,
 const DOWNLOAD_PAGE = "https://www.doubao.com/download/desktop"
 const DOWNLOAD_DIR = join(homedir(), "Downloads")
 
-/** Open the official macOS download page in the user's default browser. */
+/** Open the official download page in the user's default browser. */
 export function openDownloadPage() {
-  if (process.platform !== "darwin") return { ok: false, error: "non-mac" }
   try {
-    execSync(`open "${DOWNLOAD_PAGE}"`, { stdio: "ignore" })
+    if (IS_WIN) execSync(`start "" "${DOWNLOAD_PAGE}"`, { shell: "cmd.exe", stdio: "ignore" })
+    else if (process.platform === "darwin") execSync(`open "${DOWNLOAD_PAGE}"`, { stdio: "ignore" })
+    else return { ok: false, error: installHint() }
     return { ok: true }
   } catch (e) {
     return { ok: false, error: String(e?.message ?? e) }
@@ -273,8 +275,10 @@ async function installDmg(dmgPath) {
  * download, then retry" — the only step the plugin cannot do for the user.
  */
 export async function attemptClientInstall({ port = DEFAULT_PORT, openPage = true } = {}) {
-  if (process.platform !== "darwin") {
-    return { ok: false, error: "仅 macOS 支持自动安装；其他平台请手动从 https://www.doubao.com/download/desktop 安装。" }
+  // Only macOS ships a .dmg this can mount and copy. Windows users install the
+  // official .exe themselves; Linux has no client at all.
+  if (!supportsAutoInstall()) {
+    return { ok: false, manual: true, error: installHint() }
   }
   if (isDoubaoRunning() || (await isCdpUp(port, 1000))) {
     const d = await diagnoseClient({ port })

@@ -14,6 +14,7 @@
 
 import { execSync } from "node:child_process"
 import { isClientDebuggable, isDoubaoRunning, launchClient, attemptClientInstall, openDownloadPage } from "./lib/client-checkin.mjs"
+import { relaunchCommand } from "./lib/platform.mjs"
 
 const port = Number(process.env.DOUBAO_CDP_PORT ?? 9333)
 const force = process.argv.includes("--force")
@@ -43,7 +44,7 @@ async function main() {
       console.log(
         `Doubao is running but WITHOUT the remote-debugging port ${port}.\n` +
         `Quit Doubao, then either:\n` +
-        `  open -a Doubao --args --remote-debugging-port=${port}\n` +
+        `  ${relaunchCommand(port)}\n` +
         `or run this helper with --force to kill and relaunch it.`,
       )
       return 1

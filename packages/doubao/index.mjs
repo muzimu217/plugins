@@ -42,6 +42,9 @@ import { claimableCredit, diffClaims } from "./lib/campaign.mjs"
 import { sweepRewards, summarizeSweep, TASK_MODES } from "./lib/sweep.mjs"
 import { diagnoseClient, stageLabel } from "./lib/client-status.mjs"
 import { launchBrowserLogin, findBrowserBinary } from "./lib/browser-login.mjs"
+import { appPath, relaunchCommand, PLATFORM_NAME } from "./lib/platform.mjs"
+import { dynamicModels } from "./lib/client-models.mjs"
+import { checkClientAccount } from "./lib/account-guard.mjs"
 
 // Whether the plugin should drive the desktop client to claim the daily
 // credit itself (built-in auto-check-in). Set by the provider config UI
@@ -666,6 +669,15 @@ async function checkinDoubao(cookie, accountKey, deviceSeed) {
   // campaign with the real auth cookie the plugin already holds; that reflects
   // the claim authoritatively.
   if (enabled) {
+    // 多账号安全：豆包客户端一次只登录一个账号，而签到必须靠它 webview 里
+    // 的真实点击。若客户端登录的是另一个账号，这一下点下去，奖励就领到那个
+    // 人头上去了。所以先核对客户端的 uid 与本账号是否一致：不一致就直说，
+    // 绝不动手。（读不到客户端 uid 时不拦——后面的 sweep 会自己报连不上。）
+    if (deviceSeed) {
+      const live = await harvestClientCookies().catch(() => null)
+      const verdict = checkClientAccount(live?.ok ? live.uid : "", deviceSeed)
+      if (!verdict.ok) return { outcome: "failed", message: verdict.message }
+    }
     // The env switch is read here, not only in config(): a host (or a test)
     // that never calls config() must still be able to forbid launching a GUI.
     const allowClient = autoLaunchClient && process.env.DOUBAO_CLIENT_AUTOLAUNCH !== "0"
@@ -937,10 +949,19 @@ export const DoubaoAuthPlugin = async () => ({
   },
   provider: {
     id: "doubao",
-    // Static: the web account has one model and a deep-think switch, both
-    // known here. There is no endpoint to ask, so a made-up "dynamic" list
-    // would only ever be this table with extra failure modes.
-    models: MODELS,
+    // Dynamic: the list follows the client's own model menu, so a model Doubao
+    // adds later (DeepSeek, GLM, a new 2.x) shows up without a plugin release.
+    // Read at most once per 6 hours and cached, because opening that menu means
+    // driving the client's window; the static MODELS table is the last resort,
+    // so the provider is never empty and never fails the host's 20 s listing.
+    async models() {
+      try {
+        const { models } = await dynamicModels({ fallback: MODELS })
+        return models
+      } catch {
+        return MODELS
+      }
+    },
   },
   auth: {
     provider: "doubao",
@@ -1164,7 +1185,7 @@ export const DoubaoAuthPlugin = async () => ({
               url: "",
               method: "auto",
               instructions:
-                "未检测到豆包电脑客户端（/Applications/Doubao.app）。签到活动只在客户端内开放，所以本插件不再走网页端取号。已为你打开官方下载页：请点「下载 macOS 版」，下载完成后点此重试，插件会自动安装并读取凭证。",
+                `未检测到豆包电脑客户端（${appPath() || PLATFORM_NAME}）。签到活动只在客户端内开放，所以本插件不再走网页端取号。已为你打开官方下载页：请下载并安装对应版本后点此重试，插件会自动读取凭证。`,
               callback: async () => {
                 const r = await attemptClientInstall({ port: diag.port, openPage: false })
                 if (!r.ok) {
@@ -1182,7 +1203,7 @@ export const DoubaoAuthPlugin = async () => ({
               url: "",
               method: "auto",
               instructions:
-                `豆包客户端在运行，但没有开启远程调试端口 ${diag.port}，插件读不到会话。请运行 \`${diag.fix}\`（会重启客户端），或退出豆包后用 \`open -a Doubao --args --remote-debugging-port=${diag.port}\` 重新打开，然后点此重试。`,
+                `豆包客户端在运行，但没有开启远程调试端口 ${diag.port}，插件读不到会话。请运行 \`${diag.fix}\`（会重启客户端），或退出豆包后用 \`${relaunchCommand(diag.port)}\` 重新打开，然后点此重试。`,
               callback: harvest,
             }
           }

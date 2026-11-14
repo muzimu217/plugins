@@ -22,14 +22,11 @@ import { join } from "node:path"
 import { execSync } from "node:child_process"
 
 import { isCdpUp, isDoubaoRunning, launchClient } from "./client-checkin.mjs"
+import { appPath, binaryPath, relaunchCommand, quitClient, killClient, userDataDir } from "./platform.mjs"
 
-const APP_PATH = "/Applications/Doubao.app"
-const PLIST = `${APP_PATH}/Contents/Info.plist`
-// The client ships its own Chromium browser as a helper app. It is NOT a
-// separately installed product: it lives inside Doubao.app and shares the
-// client's version. We only report it — the claim path never drives it.
-const BROWSER_APP = `${APP_PATH}/Contents/Helpers/Doubao Browser.app`
-const BROWSER_PLIST = `${BROWSER_APP}/Contents/Info.plist`
+// Every path below is resolved per platform at call time: the .app bundle with
+// its Info.plist is macOS-only, while Windows has a plain install directory
+// with an .exe and no plist to read a version from.
 
 function plistValue(plist, key) {
   try {
@@ -47,21 +44,31 @@ let cachedInstall = null
 /** Installed? Which version? Cached: the app doesn't change mid-session. */
 export function installInfo({ fresh = false } = {}) {
   if (cachedInstall && !fresh) return cachedInstall
-  const installed = existsSync(APP_PATH) && existsSync(PLIST)
+  const APP_PATH = appPath()
+  const PLIST = APP_PATH ? `${APP_PATH}/Contents/Info.plist` : ""
+  // The client ships its own Chromium browser as a helper app. It is NOT a
+  // separately installed product: it lives inside Doubao.app and shares the
+  // client's version. We only report it — the claim path never drives it.
+  const BROWSER_APP = APP_PATH ? `${APP_PATH}/Contents/Helpers/Doubao Browser.app` : ""
+  const BROWSER_PLIST = BROWSER_APP ? `${BROWSER_APP}/Contents/Info.plist` : ""
+  // macOS: the bundle and its plist. Windows: an .exe under LOCALAPPDATA.
+  const installed = process.platform === "darwin"
+    ? !!APP_PATH && existsSync(APP_PATH) && !!PLIST && existsSync(PLIST)
+    : !!binaryPath()
   cachedInstall = {
     installed,
-    appPath: installed ? APP_PATH : null,
-    version: installed ? plistValue(PLIST, "CFBundleShortVersionString") : "",
-    bundleId: installed ? plistValue(PLIST, "CFBundleIdentifier") : "",
+    appPath: installed ? (APP_PATH || binaryPath()) : null,
+    version: installed && PLIST && existsSync(PLIST) ? plistValue(PLIST, "CFBundleShortVersionString") : "",
+    bundleId: installed && PLIST && existsSync(PLIST) ? plistValue(PLIST, "CFBundleIdentifier") : "",
     // Doubao ships a full Chromium browser as a nested helper app (1.2 GB,
     // com.bot.pc.doubao.browser, registers http/https/file + doubaobrowser://).
     // Users see it in their app list and wonder where it came from; it is
     // part of the client, not a separate install.
     browser: {
-      installed: existsSync(BROWSER_APP),
-      appPath: existsSync(BROWSER_APP) ? BROWSER_APP : null,
-      version: existsSync(BROWSER_PLIST) ? plistValue(BROWSER_PLIST, "CFBundleShortVersionString") : "",
-      bundleId: existsSync(BROWSER_PLIST) ? plistValue(BROWSER_PLIST, "CFBundleIdentifier") : "",
+      installed: !!BROWSER_APP && existsSync(BROWSER_APP),
+      appPath: BROWSER_APP && existsSync(BROWSER_APP) ? BROWSER_APP : null,
+      version: BROWSER_PLIST && existsSync(BROWSER_PLIST) ? plistValue(BROWSER_PLIST, "CFBundleShortVersionString") : "",
+      bundleId: BROWSER_PLIST && existsSync(BROWSER_PLIST) ? plistValue(BROWSER_PLIST, "CFBundleIdentifier") : "",
     },
   }
   return cachedInstall
@@ -134,7 +141,7 @@ export async function diagnoseClient(opts = {}) {
     version: inst.version,
     browserInstalled: inst.browser.installed,
     hint: `豆包客户端已安装但未运行；插件会自动以调试端口 ${port} 启动它。`,
-    fix: `open -a Doubao --args --remote-debugging-port=${port}`,
+    fix: relaunchCommand(port),
   }
 }
 
@@ -173,11 +180,11 @@ async function waitUntil(fn, timeoutMs, intervalMs = 300) {
 }
 
 function quitClientSoft() {
-  try { execSync(`osascript -e 'quit app "Doubao"'`, { stdio: "ignore", timeout: 6000 }) } catch {}
+  quitClient()
 }
 
 function killClientHard() {
-  try { execSync(`pkill -9 -f 'Doubao.app/Contents/MacOS/Doubao'`, { stdio: "ignore", timeout: 4000 }) } catch {}
+  killClient()
 }
 
 function clearSingletonFiles() {
@@ -248,6 +255,11 @@ export async function ensureClientReady(opts = {}) {
     : { ...base, ok: false, stage: "not-running", action: "restart-failed", error: r.error ?? "重启失败" }
 }
 
-// Only here so the version probe has a single reader; kept out of the module
-// top level so importing this file never shells out.
-export const _paths = { APP_PATH, PLIST, BROWSER_APP, UDD }
+// Only here so the version probe has a single reader; resolved lazily so the
+// values follow the platform and never shell out at import time.
+export const _paths = {
+  get APP_PATH() { return appPath() },
+  get PLIST() { const a = appPath(); return a ? `${a}/Contents/Info.plist` : "" },
+  get BROWSER_APP() { const a = appPath(); return a ? `${a}/Contents/Helpers/Doubao Browser.app` : "" },
+  get UDD() { return userDataDir() },
+}

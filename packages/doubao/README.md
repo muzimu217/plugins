@@ -212,7 +212,7 @@ debug port" and "not installed" each need a different action:
 
 | stage | 含义 | 插件行为 |
 |---|---|---|
-| `not-installed` | 没有 `/Applications/Doubao.app` | **自动打开官方下载页**，你点下载后插件自动安装并读取凭证 |
+| `not-installed` | 找不到豆包客户端（macOS `/Applications/Doubao.app`，Windows `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe`） | **打开官方下载页**；macOS 会自动挂载 .dmg 并安装，Windows 请自行安装后点重试 |
 | `not-running` | 装了但没运行 | **自动以调试端口启动**，然后签到 |
 | `running-no-debug` | 在运行，但没开调试端口 9333 | **自动重启一次**（优雅退出 → 强杀兜底 → 带端口重启），然后签到 |
 | `ready` | 端口可达 | 直接驱动卡片领取 |
@@ -392,27 +392,76 @@ healthy client look "not reachable" / "no debuggable page target", and it is why
 
 ## Models
 
-| id | what it is |
+The list is **read from the desktop client's own model menu**, so whatever
+Doubao offers is what magpie lists — a model added upstream shows up without a
+plugin release. One real read (2026-11-14) returned ten:
+
+| id | the row it came from |
 |---|---|
-| `doubao-auto` | 自动 — the client's own model picker on its default entry (`model_item_key` `"9"`) |
-| `doubao-2.1-lite` | 豆包 2.1 Lite (`model_item_key` `"seed-lite-7b"`) |
-| `doubao-2.1-pro` | 豆包 2.1 Pro — shown as 升级 on a 体验套餐 account: upgrade-gated, so it stays on the account default until a paid plan is active |
-| `doubao-2.1-pro-deep` | 豆包 2.1 Pro + 推理强度, i.e. the 深度思考 toggle as a separate model rather than a separate endpoint |
+| `doubao-auto` | 自动 |
+| `doubao-2.1-lite` | 豆包 2.1 Lite |
+| `doubao-2.1-pro` | 豆包 2.1 Pro (shows as 升级 on a 体验套餐 account) |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash |
+| `deepseek-v4-pro` | DeepSeek V4 Pro |
+| `kimi-k3.1-pro` | Kimi K3.1 Pro |
+| `kimi-k3.1-pro-fast` | Kimi K3.1 Pro 高速 |
+| `kimi-k3` | Kimi K3 |
+| `glm-5.3` | GLM 5.3 |
+| `glm-5.3-flash` | GLM 5.3 Flash |
 
-The ids and `model_item_key` values are reverse-engineered from the desktop
-client's own control-plane traffic (`mode_switch/report` and
+Each row also gets a `-deep` sibling (`doubao-auto-deep`, …): 深度思考 is a
+property of a request, not a row in the menu, and the base id keeps the normal
+reply.
+
+**How it is read.** Attach over CDP, click the model pill, read the open menu's
+leaf rows, press Escape. Rows that are actions, submenus or price tags
+(`推理强度`, `更多`, `0.65x`, `限时优惠`) are dropped. The result is cached in
+`~/.config/magpie/doubao-models.json` and re-read at most once every six hours,
+because opening that menu moves the user's window and magpie asks for the list
+on every provider listing.
+
+**Three fallbacks, so the provider is never empty**: a fresh cache; then the
+last good cache when a re-read fails; then the static table (`doubao-auto`,
+`doubao-2.1-lite`, `doubao-2.1-pro`, `doubao-2.1-pro-deep`). A models hook has
+20 seconds before the host gives up, so the read abandons inside nine.
+
+Honest limitation: the ids and `model_item_key` values were reverse-engineered
+from the client's control-plane traffic (`mode_switch/report`,
 `thinkmode_memory_report`) — `bot_id` is constant (`7338286299411103781`) across
-every consumer model and does **not** pick one. Honest limitation: the web
+every consumer model and does **not** pick one. The web
 `/samantha/chat/completion` endpoint ignores per-message model selection (a
-bogus key still returns 200 on the constant `bot_id`), so the model in practice
-is the account / conversation default. `reasoning` is real — it drives
-`completion_option.use_deep_think` — so a `-deep` model genuinely thinks harder
-while the base model name may not change the server-side model.
+bogus key still returns 200 on that constant `bot_id`), so the model in practice
+is the account / conversation default. `reasoning` is real: it drives
+`completion_option.use_deep_think`, so a `-deep` model genuinely thinks harder
+even when the base name does not change the server-side model.
 
-All four are listed with their context and output limits, so an agent plans against
-them instead of guessing. There is no endpoint to ask for the list; the account
-has one model and one toggle, so a "dynamic" list here would only ever be this
-table with extra ways to fail.
+## 多账号 (several accounts)
+
+Add each account separately; each keeps its own cookie, so the usage card, the
+balance and chat are per account. magpie keys them `doubao`, `doubao#xxxxxx`,
+and this plugin answers `usage`/`checkin` per account because every hook gets
+that account's auth.
+
+One thing cannot be per account: **the desktop client is signed in to one
+account at a time**, and claiming has to click inside it. So a claim only runs
+when the client's uid matches the account asking for it. Otherwise the plugin
+says which account the client is on and claims nothing — clicking would credit
+the other one. Reading and chatting keep working for every account, because
+those use the account's own cookie.
+
+## Platforms
+
+macOS and Windows — the two platforms Doubao ships a desktop client for.
+
+| | client | claim path |
+|---|---|---|
+| macOS | `/Applications/Doubao.app` (or `~/Applications`) | auto-install from the downloaded `.dmg`, then launch with the debug port |
+| Windows | `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe` (also `Programs\Doubao`) | install it yourself; the plugin launches it with the debug port |
+| Linux | none — Doubao has no Linux client | none; the cookie sign-in still gives chat and usage |
+
+The client path, its profile directory, the relaunch command and the quit/kill
+calls all come from `lib/platform.mjs`, so no macOS path is baked into the
+claim code.
 
 ## What a request goes through
 
